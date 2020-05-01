@@ -1,8 +1,8 @@
 {
   "client": {
-    "STRIPE_PKEY": ""
+    "STRIPE_PK": ""
   },
   "api": {
-    "STRIPE_API_KEY": ""
+    "STRIPE_SK": ""
   }
 }
