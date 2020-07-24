@@ -1,36 +1,24 @@
 from chalice import Blueprint, Response
-from botocore.errorfactory import ClientError
-from chalicelib import authorizer, s3, has_role
+from chalicelib import app, check_json_body, check_org_permission, authorizer, get_org_table
 import stripe
-import json
 import os
+import time
+from decimal import Decimal
 
 plugin_app = Blueprint(__name__)
 
 stripe.api_key = os.environ.get('STRIPE_SK')
 
 
-def get_payment_data(org):
-    bucket = os.environ.get('OTM_BUCKET')
-    file = org + '_payment.json'
-    object = s3.Object(bucket, file)
-    try:
-        response = object.get()
-        data = json.loads(response['Body'].read())
-        return data
-    except ClientError:
-        return None
-
-
 @plugin_app.route('/', methods=['GET'], cors=True, authorizer=authorizer)
+@check_org_permission('admin')
 def get_payment_customer(org):
-    app = plugin_app._current_app
-    if not has_role(app, org, 'write'):
-        return Response(body={'error': 'permission error'}, status_code=401)
+    org_info = get_org_table().get_item(Key={'name': org})
+    if 'Item' not in org_info:
+        return Response(body={'error': 'not found'}, status_code=404)
 
-    data = get_payment_data(org)
-
-    if data:
+    if 'payment' in org_info['Item']:
+        data = org_info['Item']['payment']
         customer = stripe.Customer.retrieve(data['id'])
         pm_id = customer['invoice_settings']['default_payment_method']
         pm = stripe.PaymentMethod.retrieve(pm_id)
@@ -41,20 +29,22 @@ def get_payment_customer(org):
 
 
 @plugin_app.route('/', methods=['PUT'], cors=True, authorizer=authorizer)
+@check_org_permission('admin')
+@check_json_body({
+    'email': {'type': 'string', 'required': True, 'empty': False},
+    'name': {'type': 'string', 'required': True, 'empty': False},
+    'payment_method': {'type': 'string', 'required': True, 'empty': False}
+})
 def put_payment_customer(org):
-    app = plugin_app._current_app
-    if not has_role(app, org, 'write'):
-        return Response(body={'error': 'permission error'}, status_code=401)
+    org_info = get_org_table().get_item(Key={'name': org})
+    if 'Item' not in org_info:
+        return Response(body={'error': 'not found'}, status_code=404)
 
     request = app.current_request
     body = request.json_body
 
-    if body.keys() < {'email', 'name', 'payment_method'}:
-        return Response(body={'error': 'email, name and payment_method is required'}, status_code=400)
-
-    data = get_payment_data(org)
-
-    if data:
+    if 'payment' in org_info['Item']:
+        data = org_info['Item']['payment']
         stripe.PaymentMethod.attach(body['payment_method'], customer=data['id'])
         customer = stripe.Customer.modify(
             data['id'],
@@ -71,10 +61,10 @@ def put_payment_customer(org):
             invoice_settings={'default_payment_method': body['payment_method']}
         )
 
-    bucket = os.environ.get('OTM_BUCKET')
-    file = org + '_payment.json'
-    object = s3.Object(bucket, file)
-    object.put(Body=json.dumps(customer), ContentType='application/json')
+    ts = Decimal(time.time())
+    org_info['Item']['updated_at'] = ts
+    org_info['Item']['payment'] = customer
+    get_org_table().put_item(Item=org_info['Item'])
 
     pm_id = customer['invoice_settings']['default_payment_method']
     pm = stripe.PaymentMethod.retrieve(pm_id)
