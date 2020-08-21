@@ -1,9 +1,11 @@
 from chalice import Blueprint, Response
-from chalicelib import app, check_json_body, check_org_permission, authorizer, get_org_table
-import stripe
-import os
-import time
+from chalicelib import app, authorizer
+from chalicelib.dynamodb import get_org_table
+from chalicelib.decorator import check_org_permission, check_json_body
 from decimal import Decimal
+import os
+import stripe
+import time
 
 plugin_app = Blueprint(__name__)
 
